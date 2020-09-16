@@ -30,7 +30,7 @@ SNMPGET=$(which snmpget)
 SNMPVersion="3"
 SNMPV2Community="public"
 SNMPTimeout="10"
-warningTemperature="50"
+warningTemperature="55"
 criticalTemperature="60"
 warningStorage="80"
 criticalStorage="95"
@@ -39,13 +39,14 @@ healthWarningStatus=0
 healthCriticalStatus=0
 healthString=""
 checkDSMUpdate="yes"
-allowedTypes=(system version temperature power fan disk raid ups)
+allowedTypes=(system version temperature power fan disk raid ups disktemp)
 system=(model serialNumber systemStatus)
 version=(DSMVersion DSMUpgradeAvailable)
 temperature=(temperature)
 power=(powerStatus)
 fan=(systemFanStatus CPUFanStatus)
 disk=(disk disk2)
+disktemp=(disk disk2)
 raid=(RAID)
 ups=(UpsModel UpsSN UpsStatus UpsLoad UpsBatteryCharge UpsBatteryChargeWarning UpsBatteryVoltageValue UpsBatteryVoltageNominal UpsBatteryChargeLow UpsBatteryRuntimeValue UpsBatteryRuntimeValueMinutes UpsBatteryRuntimeLow UpsBatteryRuntimeLowMinutes UpsInputVoltageValue UpsInputTransferLow UpsInputTransferHigh UpsOutputVoltageValue)
 checks=()
@@ -205,7 +206,7 @@ else
         exit 2
     fi
 
-    if [ "$checkType" = "disk" ] ; then
+    if [[ "$checkType" = "disk" || "$checkType" = "disktemp" ]] ; then
         nbDisk=$(echo "$tmpRequestDisk" | wc -l)
         for i in `seq 1 $nbDisk`;
         do
@@ -348,9 +349,8 @@ else
         for i in `seq 1 $nbDisk`;
         do
             diskID[$i]=$(echo "$syno" | grep "$OID_diskID.$(($i-1)) " | cut -d "=" -f2)
-            diskModel[$i]=$(echo "$syno" | grep "$OID_diskModel.$(($i-1)) " | cut -d "=" -f2 )
+            diskModel[$i]=$(echo "$syno" | grep "$OID_diskModel.$(($i-1)) " | cut -d "=" -f2 | tr -d '[:space:]')
             diskStatus[$i]=$(echo "$syno" | grep "$OID_diskStatus.$(($i-1)) " | cut -d "=" -f2 | sed 's/^[ \t]*//;s/[ \t]*$//')
-            diskTemp[$i]=$(echo "$syno" | grep "$OID_diskTemp.$(($i-1)) " | cut -d "=" -f2 | sed 's/^[ \t]*//;s/[ \t]*$//')
             case ${diskStatus[$i]} in
                     "1")	diskStatus[$i]="Normal";		;;
                     "2")	diskStatus[$i]="Initialized";		;;
@@ -358,6 +358,16 @@ else
                     "4")	diskStatus[$i]="SystemPartitionFailed";	healthCriticalStatus=1; healthString="$healthString, problem with ${diskID[$i]} (model:${diskModel[$i]}) status:${diskStatus[$i]} temperature:${diskTemp[$i]}";;
                     "5")	diskStatus[$i]="Crashed";		healthCriticalStatus=1;	healthString="$healthString, problem with ${diskID[$i]} (model:${diskModel[$i]}) status:${diskStatus[$i]} temperature:${diskTemp[$i]}";;
             esac
+       done
+    fi
+
+    #Check all disk status
+    if [ "$checkType" = "disktemp" ] ; then
+        for i in `seq 1 $nbDisk`;
+        do
+            diskID[$i]=$(echo "$syno" | grep "$OID_diskID.$(($i-1)) " | cut -d "=" -f2)
+            diskModel[$i]=$(echo "$syno" | grep "$OID_diskModel.$(($i-1)) " | cut -d "=" -f2 | tr -d '[:space:]')
+            diskTemp[$i]=$(echo "$syno" | grep "$OID_diskTemp.$(($i-1)) " | cut -d "=" -f2 | sed 's/^[ \t]*//;s/[ \t]*$//')
 
             if [ "${diskTemp[$i]}" -gt "$warningTemperature" ] ; then
                 if [ "${diskTemp[$i]}" -gt "$criticalTemperature" ] ; then
@@ -377,10 +387,10 @@ else
     #Check all RAID volume status
     if [ "$checkType" = "raid" ] ; then
         syno_diskspace=`$SNMPWALK $SNMPArgs $hostname $OID_Storage 2> /dev/null`
-        for i in `seq 1 $nbRAID`;
+	for i in `seq 1 $nbRAID`;
         do
             RAIDName[$i]=$(echo "$syno" | grep $OID_RAIDName.$(($i-1)) | cut -d "=" -f2)
-            RAIDStatus[$i]=$(echo "$syno" | grep $OID_RAIDStatus.$(($i-1)) | cut -d "=" -f2 | sed 's/^[ \t]*//;s/[ \t]*$//')
+	    RAIDStatus[$i]=$(echo "$syno" | grep $OID_RAIDStatus.$(($i-1)) | cut -d "=" -f2 | sed 's/^[ \t]*//;s/[ \t]*$//')
 
             storageName[$i]=$(echo "${RAIDName[$i]}" | sed -e 's/[[:blank:]]//g' | sed -e 's/\"//g' | sed 's/.*/&/')
 
@@ -393,8 +403,8 @@ else
 
             if [ "${storageID[$i]}" != "" ] ; then
                 storageSize[$i]=$(echo "$syno_diskspace" | grep "$OID_StorageSize.${storageID[$i]}" | cut -d "=" -f2 )
-                storageSizeUsed[$i]=$(echo "$syno_diskspace" | grep "$OID_StorageSizeUsed.${storageID[$i]}" | cut -d "=" -f2 )
-                storageAllocationUnits[$i]=$(echo "$syno_diskspace" | grep "$OID_StorageAllocationUnits.${storageID[$i]}" | cut -d "=" -f2 )
+		storageSizeUsed[$i]=$(echo "$syno_diskspace" | grep "$OID_StorageSizeUsed.${storageID[$i]}" | cut -d "=" -f2 )
+		storageAllocationUnits[$i]=$(echo "$syno_diskspace" | grep "$OID_StorageAllocationUnits.${storageID[$i]}" | cut -d "=" -f2 )
                 storagePercentUsed[$i]=$((${storageSizeUsed[$i]} * 100 / ${storageSize[$i]}))
                 storagePercentUsedString[$i]="${storagePercentUsed[$i]}% used"
 
@@ -441,7 +451,12 @@ else
         "disk")           echo "$healthString Number of disks:         $nbDisk" ;
                           for i in `seq 1 $nbDisk`;
                           do
-                              echo " ${diskID[$i]} (model:${diskModel[$i]}) status:${diskStatus[$i]} temperature:${diskTemp[$i]}" ;
+                              echo " ${diskID[$i]} (model:${diskModel[$i]}) status:${diskStatus[$i]}" ;
+                              done ;;
+        "disktemp")           echo "$healthString Number of disks:         $nbDisk" ;
+                          for i in `seq 1 $nbDisk`;
+                          do
+                              echo " ${diskID[$i]} (model:${diskModel[$i]}) temperature:${diskTemp[$i]}" ;
                               done ;;
         "raid")           echo " $healthString Number of RAID volume:   $nbRAID" ;
                           for i in `seq 1 $nbRAID`;
